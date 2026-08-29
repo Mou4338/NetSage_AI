@@ -74,7 +74,17 @@ load_dotenv()
 # ---------- sidebar: connection settings ----------
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
-    api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
+
+    default_api_key = st.secrets.get(
+        "GOOGLE_API_KEY",
+        os.environ.get("GOOGLE_API_KEY", "")
+    )
+
+    api_key = st.text_input(
+        "Google AI Studio API key",
+        value=default_api_key,
+        type="password"
+    )
     model_name = st.text_input("Model", value=os.environ.get("NETSAGE_MODEL", "gemini-3.6-flash"),
                                 help="Must match a model name your key can actually call.")
 
