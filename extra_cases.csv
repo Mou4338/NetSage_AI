@@ -1,0 +1,84 @@
+case_id,concept_tag,severity,osi_layer,symptom,topology_note,show_output,expected_fault
+C033,STP,Sev1,L2,"The whole floor's network intermittently freezes for a few seconds, then recovers, over and over.",Two switches were recently connected with a second redundant cable for resilience.,"Sw7#show spanning-tree summary
+Switch is in rapid-pvst mode
+Sw7#show interfaces status
+Gi0/1  connected  trunk
+Gi0/2  connected  trunk
+(no blocking port shown on either link)","A loop exists between the redundant links and STP is not blocking either port -- likely BPDU filtering/guard misconfigured or STP disabled on one switch, causing a broadcast storm."
+C034,STP,Sev2,L2,"Every time someone plugs a laptop into a wall port, that whole switch drops offline for about 30 seconds.","Wall ports are meant to be edge (host) ports, not connected to other switches.","Sw8#show spanning-tree interface fa0/15 detail
+Port is in the listening/learning state for 30 sec before forwarding
+PortFast: disabled","PortFast is not enabled on the access port, so every device plug-in triggers a full STP listening/learning cycle before the port forwards traffic."
+C035,PORT-SECURITY,Sev2,L2,A student's PC worked fine yesterday but today the port went straight to err-disabled the moment they plugged in.,Port security was enabled campus-wide last week with a max of 1 MAC per port.,"Sw2#show interfaces fa0/9 status
+fa0/9  err-disabled
+Sw2#show port-security interface fa0/9
+Security Violation Count: 1
+Max MAC Addresses: 1","The student replaced their NIC/laptop, so a new MAC address hit the port-security violation and the port was placed in err-disabled."
+C036,PORT-SECURITY,Sev3,L2,"A small unmanaged switch was added under a desk to add more ports, and now that whole port is down.",Port security sticky MAC learning is enabled on that access port.,"Sw3#show port-security interface fa0/22
+Violation Mode: shutdown
+Secure MAC addresses: 1 (max 1)
+Security Violation Count: 3","Multiple devices behind the unmanaged switch are all appearing on one port, exceeding the port-security max-MAC limit of 1, and the port shut itself down."
+C037,TRUNK,Sev2,L2,"CDP/console warnings about a 'native VLAN mismatch' are showing up, and untagged traffic between two switches is landing in the wrong VLAN.",Trunk link between Sw1 and Sw2 was reconfigured during a VLAN cleanup.,"Sw1#show interfaces gi0/1 trunk
+Native vlan: 1
+Sw2#show interfaces gi0/1 trunk
+Native vlan: 99","The two ends of the trunk have different native VLANs configured (1 vs 99), so untagged frames are being misdirected between VLANs."
+C038,TRUNK,Sev1,L2,A new switch was added to the trunk and now several unrelated VLANs across the building are seeing each other's broadcast traffic.,New switch's trunk port encapsulation was set manually instead of negotiated.,"Sw9#show interfaces gi0/2 switchport
+Administrative Mode: trunk
+Operational Mode: static access
+(encapsulation negotiation failed)","Trunk negotiation failed between the two switches, so the link fell back to access mode carrying only the native VLAN untagged, bridging VLANs together unexpectedly."
+C039,DUPLEX,Sev3,L1/L2,"File transfers to one specific server are extremely slow, but ping response times look normal.",Server NIC was replaced last week.,"Sw4#show interfaces gi0/8
+GigabitEthernet0/8 is up, line protocol is up
+  Full-duplex, 100Mb/s
+Server NIC configured for: Half-duplex, 100Mb/s","A duplex mismatch between the switch port (full-duplex) and the server NIC (half-duplex) is causing collisions and late-collision retransmits, which show up as throughput problems rather than outright failure."
+C040,DUPLEX,Sev3,L1/L2,"An old printer occasionally drops mid-print job with communication errors, but reconnects a moment later.",Printer connects via an old 10/100 switch port with autonegotiation.,"Sw5#show interfaces fa0/20
+FastEthernet0/20 is up, line protocol is up
+  Auto-duplex (Half), 100Mb/s (Auto)
+  Late collisions: 1442","Autonegotiation settled on half-duplex, and the rising late-collision counter indicates a duplex mismatch with the printer's fixed full-duplex NIC setting."
+C041,MTU,Sev2,L3,"Small pings between two branches succeed, but large file transfers and some websites time out or hang.",A new GRE tunnel was added between R1 and R2 for the branch link.,"R1#show interface tunnel0
+  MTU 1476 bytes
+R1#show run | include ip mtu
+(no ip mtu adjustment on the tunnel path, path MTU discovery blocked by an ACL)","The GRE tunnel reduces the effective MTU, and with ICMP (needed for Path MTU Discovery) blocked somewhere on the path, larger packets are silently dropped instead of being fragmented or triggering a 'too big' response."
+C042,ETHERCHANNEL,Sev2,L2,A pair of bonded uplink cables between two switches is only carrying half the expected throughput.,Gi0/1 and Gi0/2 were bundled into a port-channel for extra bandwidth.,"Sw6#show etherchannel summary
+Group  Ports
+1      Gi0/1(P)  Gi0/2(D)
+(D = down, not bundled)","One of the two physical links in the EtherChannel bundle (Gi0/2) is not actually bundled ('D' = down/not attached), so only one link is passing traffic instead of both."
+C043,ETHERCHANNEL,Sev1,L2,"Right after bundling two uplinks into an EtherChannel, the whole trunk between the two switches went completely down.","One side was configured for LACP (active), the other for PAgP (desirable).","Sw6#show etherchannel summary
+Group state: SU (suspended)
+Sw7#show etherchannel summary
+Group state: down","The two switches are running mismatched EtherChannel negotiation protocols (LACP on one side, PAgP on the other), so the bundle never forms and the link stays down/suspended."
+C044,NTP,Sev3,L7,"Log timestamps across different devices don't line up, making it hard to trace an incident across the network.",Devices are supposed to sync time from an internal NTP server.,"R1#show ntp status
+Clock is unsynchronized, stratum 16
+R1#show ntp associations
+(no associations)","The router has no working NTP association with the internal time server, so its clock is free-running and drifting from the rest of the network."
+C045,LOGGING,Sev2,L7,"After an outage last night, the team can't find any log entries explaining what happened.",A central syslog server was set up recently to collect logs from all devices.,"R2#show logging
+Syslog logging: disabled
+Trap logging: level informational, 0 message lines logged","Syslog logging is disabled on the router, so nothing was ever sent to the central log server -- there is no record of the event."
+C046,GATEWAY,Sev3,L3,"After a planned maintenance window, the backup router is now acting as the active gateway even though the primary is back online and healthy.","R1 is meant to be primary, R2 is backup, using HSRP preemption.","R1#show standby brief
+State  Standby   Priority 100
+R2#show standby brief
+State  Active    Priority 110
+(R1 does not have preempt configured)","R2 has a higher HSRP priority and preempt is not configured on R1, so even though R1 is healthy again, R2 keeps the active role instead of handing it back."
+C047,ROUTING,Sev1,L3,"Two routers that should be OSPF neighbors never form an adjacency, even though the link between them is up.",R3 and R4 are connected directly and were configured for OSPF area 0.,"R3#show run | include area
+ network 10.0.0.0 0.0.0.255 area 0
+R4#show run | include area
+ network 10.0.0.0 0.0.0.255 area 1","R3 and R4 have the shared link configured in different OSPF areas (area 0 vs area 1), so the neighbor relationship never forms."
+C048,DHCP,Sev2,L7,New VoIP phones get an IP address but never find their call manager / boot server and stay stuck at a blank screen.,Phones rely on DHCP option 150 to learn the TFTP/call-manager server address.,"Router#show run | section pool VLAN-VOICE
+ip dhcp pool VLAN-VOICE
+ network 192.168.90.0 255.255.255.0
+ default-router 192.168.90.1
+(no option 150 configured)","DHCP option 150 (TFTP/call-manager server address) is missing from the voice VLAN's DHCP pool, so phones get basic IP connectivity but never learn where to register."
+C049,WIRELESS,Sev2,L2,Staff Wi-Fi keeps prompting for a password repeatedly and most devices fail to connect at all.,Staff SSID was recently migrated from WPA2-Personal to WPA2-Enterprise with RADIUS.,"WLC#show wlan 3
+Security: WPA2 802.1X
+WLC#show radius summary
+RADIUS server 192.168.5.20: DEAD","The configured RADIUS authentication server is unreachable ('DEAD'), so 802.1X authentication requests never complete and clients repeatedly fail to associate."
+C050,WIRELESS,Sev3,L2,"One student's phone connects to Wi-Fi fine, but a nearly identical phone belonging to their roommate can't see the network at all.",MAC filtering was recently enabled on the dorm SSID as a security measure.,"WLC#show wlan filter
+MAC Filtering: enabled
+Allowed MACs: 48 entries
+(roommate's device MAC not present in the list)",MAC address filtering is enabled on the SSID and the roommate's device MAC address was never added to the allow list.
+C051,GATEWAY,Sev1,L3,"A brand-new VLAN was created and switched fine, but devices on it can't reach any other VLAN at all.",Router-on-a-stick setup; each VLAN needs its own subinterface.,"Router#show ip interface brief | include Gi0/0
+GigabitEthernet0/0.10  up  up
+GigabitEthernet0/0.20  up  up
+(no subinterface exists for the new VLAN 70)","No router subinterface (encapsulation dot1Q 70) was ever created for the new VLAN 70, so there is no Layer 3 gateway for it at all."
+C052,ACL,Sev2,L3/L4,"A time-based restriction was supposed to block student lab access after 10 PM, but students report it never works at any time of day.",A time-range object was configured and referenced in an ACL.,"R1#show time-range After-Hours
+time-range entry: After-Hours (inactive)
+R1#show clock
+*11:32:07.123 UTC Wed Aug 21 2026 (device clock not synced to NTP)","The time-range is showing as inactive because the router's clock is not synchronized (no NTP), so the ACL's time-based rule never evaluates as being in its active window."

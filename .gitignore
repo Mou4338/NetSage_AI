@@ -1,0 +1,50 @@
+.env
+.streamlit/secrets.toml
+.venv/
+__pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Large/generated files
+*.mp4
+*.avi
+*.mov
+*.wav
+*.zip
+
+# Model files
+*.h5
+*.keras
+*.pth
+*.pt
+*.onnx
+
+# Secrets
+secrets.json
+credentials.json

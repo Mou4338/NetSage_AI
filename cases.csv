@@ -1,0 +1,123 @@
+case_id,concept_tag,severity,osi_layer,symptom,topology_note,show_output,expected_fault
+C001,VLAN,Sev2,L2,"PC in Room 101 gets an IP but cannot reach anything, including its own default gateway.","PC101 patched into Sw2 Fa0/5, should be on VLAN 30 (Students).","Sw2#show interfaces fa0/5 switchport
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: static access
+Access Mode VLAN: 10 (Guest)
+Voice VLAN: none",Access port Fa0/5 is assigned to VLAN 10 (Guest) instead of VLAN 30 (Students).
+C002,VLAN,Sev1,L2,All PCs on the new Accounting branch lost connectivity to each other after a switch reload.,"Sw3 trunk to Core carries VLANs 10,20,30,40.","Sw3#show interfaces trunk
+Port   Mode   Encapsulation  Status   Native vlan
+Gi0/1  on     802.1q         trunking 1
+Port   Vlans allowed on trunk
+Gi0/1  10,20,30","VLAN 40 (Accounting) is missing from the allowed VLAN list on the Gi0/1 trunk, so it is being pruned."
+C003,VLAN,Sev3,L2,One printer in the lab is unreachable from its own VLAN but everything else on that VLAN works.,Printer connects to Sw1 Fa0/12.,"Sw1#show vlan brief
+VLAN Name       Status  Ports
+20   Faculty    active  Fa0/1-11, Fa0/13-24
+(VLAN 20 does not list Fa0/12)
+Sw1#show interfaces fa0/12 switchport
+Access Mode VLAN: 999 (inactive)","Fa0/12 is assigned to VLAN 999, which does not exist / is not active on this switch."
+C004,VLAN,Sev2,L2,New laptop cannot get past 'obtaining IP address' when plugged into the library switch.,Library port should be access VLAN 50; DHCP relay is configured on the router subinterface for VLAN 50.,"SwLib#show interfaces fa0/8 switchport
+Administrative Mode: trunk
+Operational Mode: trunk
+","Port Fa0/8 was left configured as a trunk port instead of a VLAN 50 access port, so the PC never gets an access-VLAN and DHCP fails."
+C005,VLAN,Sev2,L2,Voice VLAN phone registers but the PC daisy-chained behind it cannot reach the gateway.,Fa0/6 configured with a voice VLAN and a data VLAN.,"Sw4#show interfaces fa0/6 switchport
+Access Mode VLAN: 30 (Students)
+Voice VLAN: 100 (Voice)
+(PC subnet is actually VLAN 31, not 30)",Data access VLAN on Fa0/6 is set to 30 but the PC's cabling/subnet belongs to VLAN 31.
+C006,VLAN,Sev1,L2,Two switches show conflicting VLAN databases after a technician added a VLAN locally.,Sw5 and Sw6 are both VTP clients of the same domain.,"Sw5#show vtp status
+VTP Version: 2
+Configuration Revision: 12
+Sw6#show vtp status
+Configuration Revision: 4","Sw5 has a higher VTP revision number than the domain server, so it may have overwritten the VLAN database domain-wide."
+C007,GATEWAY,Sev1,L3,Entire VLAN 30 subnet can talk to each other but nothing can leave the subnet.,PCs configured with gateway 192.168.30.1.,"PC>ipconfig
+IPv4 Address: 192.168.30.55
+Subnet Mask: 255.255.255.0
+Default Gateway: 192.168.30.1
+Router#show ip interface brief
+GigabitEthernet0/0.30  192.168.30.254  YES manual up up",PCs are pointed at 192.168.30.1 but the actual router subinterface for VLAN 30 is 192.168.30.254 -- default gateway mismatch.
+C008,GATEWAY,Sev2,L3,One PC can ping the gateway but no other PC on the same VLAN can.,Static IP configured manually on the affected PC.,"PC>ipconfig
+IPv4 Address: 192.168.20.10
+Subnet Mask: 255.255.255.0
+Default Gateway: 192.168.10.1",Default gateway (192.168.10.1) is on a different subnet than the PC's own IP (192.168.20.0/24).
+C009,GATEWAY,Sev1,L3,Whole branch lost access to everything outside the local subnet at the same time.,HSRP pair R1/R2 provide the gateway VIP for VLAN 10.,"R1#show standby brief
+Interface  Grp  State  Active   Standby   Virtual IP
+Gi0/1      10   Standby  unknown  local     192.168.10.1
+R2#show standby brief -- no output (process not running)","HSRP active router R2 is down/unreachable, and R1 has not taken over the virtual gateway IP."
+C010,GATEWAY,Sev2,L3,New DHCP clients get an address but cannot reach the gateway; static PCs on same VLAN are fine.,DHCP pool default-router entry recently edited.,"Router#show run | section pool VLAN30
+ip dhcp pool VLAN30
+ network 192.168.30.0 255.255.255.0
+ default-router 192.168.30.1",DHCP pool is handing out default-router 192.168.30.1 but the interface is actually 192.168.30.254 -- scope option mismatch.
+C011,GATEWAY,Sev3,L3,"Intermittent 'destination host unreachable' only from one PC, others on same VLAN fine.",Duplicate static IP suspected.,"Router#show arp
+Internet  192.168.40.20  0  0011.2233.4455  ARPA  Gi0/2
+Internet  192.168.40.20  0  00aa.bbcc.ddee  ARPA  Gi0/2",Two different MAC addresses are resolving to the same IP 192.168.40.20 -- duplicate IP assignment causing intermittent ARP flapping.
+C012,DHCP,Sev2,L3,Several new PCs on VLAN 40 stuck on APIPA (169.254.x.x) address.,DHCP server is centralized on the router; relay configured on switch uplink.,"Router#show ip dhcp pool
+Pool VLAN40 : 
+ Utilization mark (high/low) : 100 / 0
+ Subnet size (first/next) : 0 / 0
+ Total addresses : 0","DHCP pool VLAN40 has zero addresses defined (empty/misconfigured network statement), so clients time out and self-assign APIPA."
+C013,DHCP,Sev1,L3,Whole new classroom of 20 PCs cannot get an IP address at all.,"Classroom is on VLAN 60, router-on-a-stick subinterface newly added.","Router#show ip dhcp binding -- empty
+Router#show run int gi0/0.60
+interface GigabitEthernet0/0.60
+ encapsulation dot1Q 60
+(no ip helper-address configured on switch SVI upstream)","No ip helper-address is forwarding DHCP broadcasts from VLAN 60 to the DHCP server, so requests never arrive."
+C014,DHCP,Sev3,L3,"A returning laptop keeps getting a different IP each day, breaking a printer share that was IP-pinned.",Lease time was shortened during a lab exercise.,"Router#show run | section pool VLAN20
+ip dhcp pool VLAN20
+ lease 0 0 5","DHCP lease time was set to 5 minutes, so addresses are churning far more than expected."
+C015,DHCP,Sev2,L3,Two PCs on the same VLAN keep getting the exact same IP address and knocking each other offline.,A static reservation overlaps the dynamic pool range.,"Router#show run | section pool VLAN30
+ip dhcp pool VLAN30
+ network 192.168.30.0 255.255.255.0
+ip dhcp excluded-address 192.168.30.1 192.168.30.9
+(static PC configured with 192.168.30.50, which is inside the dynamic range)","A statically-assigned address (192.168.30.50) falls inside the active DHCP scope and was not excluded, causing an IP collision."
+C016,DNS,Sev2,L7,Students can ping the file server by IP but 'server not found' when browsing to it by name.,Internal DNS server is 192.168.10.5.,"PC>ipconfig /all
+DNS Servers: 192.168.10.6
+(actual internal DNS server is 192.168.10.5)","PCs are pointed at the wrong DNS server address (192.168.10.6 instead of .5), so name resolution fails while IP connectivity is fine."
+C017,DNS,Sev3,L7,"One internal hostname resolves to an old, decommissioned IP address.",Server was re-IP'd last week during the VLAN 40 migration.,"DNS Server#show host filesrv.college.local
+filesrv.college.local  A  192.168.40.15  (old address; server now on 192.168.40.115)",Stale A record for filesrv.college.local still points to the pre-migration IP -- DNS record was never updated.
+C018,DNS,Sev2,L7,External websites fail to resolve for the whole building but internal name lookups work fine.,Internal DNS is configured to forward unknown queries to an upstream/public resolver.,"DNS Server#show run | include forwarder
+(no forwarder configured)","Internal DNS server has no upstream forwarder configured, so it cannot resolve any name outside its own zone."
+C019,DNS,Sev3,L7,"Browsing to the intranet portal is slow the first time each morning, then fine.",DNS record TTL was set very low during testing and never reverted.,"DNS Server#show host portal.college.local
+portal.college.local  A  192.168.10.20  TTL=10","TTL on the portal record is set to 10 seconds, forcing constant re-resolution instead of caching."
+C020,ROUTING,Sev1,L3,Branch A cannot reach Branch B at all; both branches can reach the Internet fine.,"R1 (Branch A) and R2 (Branch B) run OSPF over a WAN link, area 0.","R1#show ip route ospf -- (no OSPF routes present)
+R1#show ip ospf neighbor -- empty","OSPF neighbor relationship between R1 and R2 never formed (no neighbors listed), so inter-branch routes are missing."
+C021,ROUTING,Sev2,L3,"Traffic from VLAN 30 to the server farm VLAN takes a slow, extra hop through the old core switch.",Two equal paths exist; one route was manually configured with a lower preference.,"R1#show ip route 192.168.50.0
+Routing entry for 192.168.50.0/24
+ Known via 'static', distance 1, metric 0
+(a better OSPF route with distance 110 exists but is not preferred because static distance is lower)",A manually-added static route with a lower administrative distance is overriding the better OSPF path to the server farm.
+C022,ROUTING,Sev1,L3,"After a router reboot, the whole new branch lost its route to the Internet.",Default route was configured but not saved before the reboot.,"R3#show ip route
+Gateway of last resort is not set
+R3#show run | include ip route
+(no output)",The default route (ip route 0.0.0.0 0.0.0.0 <next-hop>) was never saved to the startup-config and was lost on reload.
+C023,ROUTING,Sev2,L3,"Users can reach the server subnet but replies never come back, one-way connectivity.",New subnet 192.168.70.0/24 was added behind R4.,Core#show ip route 192.168.70.0 -- % Network not in table,The core router has no route back to the new 192.168.70.0/24 subnet -- missing/unadvertised return route.
+C024,ACL,Sev2,L3/L4,Students in VLAN 30 can ping the file server but cannot open the shared folder (SMB).,An ACL was added on R1 Gi0/0.30 to restrict server-farm access.,"R1#show access-lists 101
+Extended IP access list 101
+ 10 permit icmp 192.168.30.0 0.0.0.255 any
+ 20 deny ip 192.168.30.0 0.0.0.255 192.168.50.0 0.0.0.255
+ 30 permit ip any any",ACL 101 explicitly denies IP traffic (which blocks TCP/SMB) from VLAN 30 to the server farm while only permitting ICMP -- overly restrictive rule ordering.
+C025,ACL,Sev1,L3/L4,"After applying a new security ACL, the whole VLAN 30 subnet lost all outbound access, including web.",ACL applied inbound on the VLAN 30 subinterface.,"R1#show access-lists 110
+Extended IP access list 110
+ 10 permit tcp any any eq 443
+(implicit deny any any at the end)","ACL 110 only explicitly permits HTTPS; every other protocol (DNS, HTTP, ICMP) is silently dropped by the implicit deny at the end of the list."
+C026,ACL,Sev3,L3/L4,One specific server can be pinged by everyone except the admin's own PC.,A host-specific deny rule was added above the general permit rule.,"R1#show access-lists 120
+Extended IP access list 120
+ 10 deny icmp host 192.168.30.99 host 192.168.50.10
+ 20 permit ip any any","Line 10 specifically denies ICMP from the admin's host (192.168.30.99) to the server, and it is evaluated before the general permit."
+C027,ACL,Sev2,L3/L4,"Guest Wi-Fi users can reach the internal file server, which should be blocked.",ACL meant to isolate the Guest VLAN from internal subnets.,"R1#show access-lists 130
+Extended IP access list 130
+ 10 permit ip any any
+(no deny rules present)",The guest-isolation ACL 130 only contains a permit-any rule; the intended deny statements to internal subnets were never added.
+C028,NAT,Sev1,L3,"No PC in the building can reach the Internet, but internal traffic between VLANs is fine.",NAT overload configured on the edge router's outside interface.,"Edge#show ip nat statistics
+Total active translations: 0
+Outside interfaces: (none)
+Inside interfaces: Gi0/1","No interface is marked as the NAT outside interface, so 'ip nat inside source' never triggers -- NAT is not actually translating."
+C029,NAT,Sev2,L3,Internet works for most PCs but a specific server that needs inbound access from outside is unreachable externally.,Static NAT was supposed to map the server's private IP to a public IP.,"Edge#show ip nat translations
+(no static entries; only dynamic overload entries present)",The required static NAT entry (ip nat inside source static 192.168.50.10 <public-ip>) for the server was never configured.
+C030,NAT,Sev3,L3,Two branches using the same private subnet range cannot reach each other over the new site-to-site link.,Both branches use 192.168.1.0/24 internally.,"R1#show run | include ip nat
+ip nat inside source list 1 interface Gi0/0 overload
+(same overlapping subnet configured at both ends, no NAT applied on the tunnel path)","Overlapping private subnets (192.168.1.0/24 at both branches) are not being translated across the site-to-site link, causing routing ambiguity."
+C031,WIRELESS,Sev1,L2/L3,"Guest Wi-Fi can reach internal server resources, which should never happen.",Guest SSID is mapped to VLAN 15; internal server farm is VLAN 50.,"WLC#show wlan 2
+SSID: Guest-WiFi  Interface/Interface Group(G): vlan15
+Sw-AP#show interfaces trunk
+Gi0/1  Vlans allowed: 1,10,15,50",Guest VLAN 15 is trunked alongside the internal server VLAN 50 with no isolating ACL -- guest traffic is not segmented from internal resources.
+C032,WIRELESS,Sev2,L1/L2,"Students near the far end of the library keep getting dropped from Wi-Fi, wired PCs unaffected.",Single AP covers the whole library floor.,"AP1#show controllers dot11Radio 0 | include Power
+Transmit Power: 5 dBm (low)
+AP1#show interface dot11radio0 -- CRC errors: high","AP transmit power is set very low (5 dBm) for the coverage area, causing weak signal and drops at distance -- RF/coverage issue, not switching."
