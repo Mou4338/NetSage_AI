@@ -22,6 +22,9 @@ from google.genai import types
 CASE_LOG_PATH = "netsage_case_log.csv"
 PROMPT_PATH = "diagnose_prompt.md"
 
+OSI_LAYERS_FOR_EDIT = ["L1", "L2", "L3", "L4", "Other"]
+CONFIDENCE_LEVELS = ["low", "medium", "high"]
+
 SEV_COLOR = {"Sev1": "#E85D5D", "Sev2": "#F0A857", "Sev3": "#4FD1C5"}
 CONF_COLOR = {"high": "#6EE7A8", "medium": "#F0A857", "low": "#E85D5D"}
 FEEDBACK_COLOR = {"accepted": "#6EE7A8", "edited": "#F0A857", "rejected": "#E85D5D"}
@@ -29,7 +32,12 @@ LAYER_ORDER = ["L7", "L6", "L5", "L4", "L3", "L2", "L1"]
 LAYER_NAMES = {"L7": "Application", "L6": "Presentation", "L5": "Session",
                "L4": "Transport", "L3": "Network", "L2": "Data Link", "L1": "Physical", "Other": "Other"}
 
-st.set_page_config(page_title="NetSage AI", page_icon="🛰️", layout="wide")
+CASE_LOG_COLUMNS = [
+    "timestamp", "symptom", "category", "severity", "osi_layer", "confidence",
+    "root_cause", "evidence", "next_command", "fix_steps", "feedback",
+]
+
+st.set_page_config(page_title="NetSage AI", page_icon="\U0001F6F0\ufe0f", layout="wide")
 
 # ---------- small CSS polish (works with the dark theme in .streamlit/config.toml) ----------
 st.markdown("""
@@ -39,6 +47,8 @@ st.markdown("""
 .osi-row { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:6px;
            border:1px solid #22314A; margin-bottom:4px; font-family: monospace; font-size:13px; }
 .osi-row.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.formal-notice { border:1px solid #2E3F5C; background:#152238; border-radius:6px; padding:12px 14px;
+                  font-size:14px; line-height:1.5; margin:6px 0 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -48,13 +58,21 @@ def badge(text, color):
 
 
 def friendly_error_message(exc: Exception) -> str:
-    """A calm, formal message for the dashboard — never the raw exception/traceback."""
+    """A calm, formal message for the dashboard - never the raw exception/traceback."""
     text = str(exc)
-    if "RESOURCE_EXHAUSTED" in text or "429" in text or "quota" in text.lower():
-        return ("AI diagnosis is temporarily unavailable — the daily request limit for this API key "
-                "has been reached. You can fill in a diagnosis manually below and continue the workflow.")
+    lowered = text.lower()
+    if "resource_exhausted" in lowered or "429" in text or "quota" in lowered or "rate limit" in lowered:
+        return ("AI diagnosis is temporarily unavailable: the daily request limit for this API key "
+                "has been reached. Please complete the diagnosis manually below and continue the workflow. "
+                "AI diagnosis will resume once the limit resets.")
+    if "401" in text or "403" in text or "permission" in lowered or "unauthorized" in lowered or "api key" in lowered:
+        return ("AI diagnosis is temporarily unavailable: the API key could not be authenticated. "
+                "Please verify the key in the sidebar, or complete the diagnosis manually below.")
+    if "timeout" in lowered or "deadline" in lowered:
+        return ("AI diagnosis is temporarily unavailable: the request timed out. "
+                "Please try again in a moment, or complete the diagnosis manually below.")
     return ("AI diagnosis is temporarily unavailable right now. "
-            "You can fill in a diagnosis manually below and continue the workflow.")
+            "Please complete the diagnosis manually below and continue the workflow.")
 
 
 def blank_diagnosis(category_value: str) -> dict:
@@ -67,8 +85,12 @@ def blank_diagnosis(category_value: str) -> dict:
 # ---------- persistence ----------
 def load_cases():
     if os.path.exists(CASE_LOG_PATH):
-        return pd.read_csv(CASE_LOG_PATH)
-    return pd.DataFrame(columns=["timestamp", "symptom", "category", "severity", "osi_layer", "confidence", "root_cause", "feedback"])
+        df = pd.read_csv(CASE_LOG_PATH)
+        for col in CASE_LOG_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+        return df
+    return pd.DataFrame(columns=CASE_LOG_COLUMNS)
 
 
 def save_case(row: dict):
@@ -83,7 +105,7 @@ if not os.path.exists(PROMPT_PATH):
     with open(PROMPT_PATH, "w", encoding="utf-8") as f:
         f.write(DEFAULT_SYSTEM_PROMPT)
 
-for key, default in {"findings": None, "diagnosis": None, "editing": False}.items():
+for key, default in {"findings": None, "diagnosis": None, "editing": False, "case_id": 0}.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -91,12 +113,12 @@ load_dotenv()
 
 # ---------- sidebar: connection settings ----------
 with st.sidebar:
-    st.markdown("### ⚙️ Settings")
+    st.markdown("### \u2699\ufe0f Settings")
 
     try:
         default_api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
     except Exception:
-        # no .streamlit/secrets.toml on this machine — fall back to .env / blank, don't crash the app
+        # no .streamlit/secrets.toml on this machine - fall back to .env / blank, don't crash the app
         default_api_key = os.environ.get("GOOGLE_API_KEY", "")
 
     api_key = st.text_input("Google AI Studio API key", value=default_api_key, type="password")
@@ -116,7 +138,7 @@ with st.sidebar:
                         names.append(m.name)
                 st.session_state["model_list"] = names
             except Exception:
-                st.warning("Couldn't reach the model list right now — check your API key and try again shortly.")
+                st.warning("Couldn't reach the model list right now - check your API key and try again shortly.")
         if st.session_state.get("model_list"):
             for n in st.session_state["model_list"]:
                 st.code(n, language=None)
@@ -124,42 +146,48 @@ with st.sidebar:
     with st.expander("Edit diagnosis system prompt"):
         with open(PROMPT_PATH, "r", encoding="utf-8", errors="replace") as f:
             current_prompt = f.read()
-        prompt_text = st.text_area("Diagnosis prompt", value=current_prompt, height=260)
+        prompt_text = st.text_area("Diagnosis prompt", value=current_prompt, height=260, key="prompt_editor")
         if st.button("Save prompt"):
             with open(PROMPT_PATH, "w", encoding="utf-8") as f:
                 f.write(prompt_text)
             st.success("Saved.")
 
-    st.caption("The API key is only kept in this session — it's not written to disk unless it's already in your .env file.")
+    st.caption("The API key is only kept in this session - it's not written to disk unless it's already in your .env file.")
 
-st.markdown("## 🛰️ NetSage AI")
-st.caption("Cisco Packet Tracer triage assistant — Python rule checker → Gemini diagnosis → human review")
+st.markdown("## \U0001F6F0\ufe0f NetSage AI")
+st.caption("Cisco Packet Tracer triage assistant - Python rule checker \u2192 Gemini diagnosis \u2192 human review")
 
-tab_new, tab_dash = st.tabs(["🩺 New Case", "📊 Dashboard"])
+tab_new, tab_dash = st.tabs(["\U0001FA7A New Case", "\U0001F4CA Dashboard"])
+
+cid = st.session_state["case_id"]  # ties widget keys to the current case so a new case starts fresh
 
 # ================= NEW CASE TAB =================
 with tab_new:
     left, right = st.columns([1, 1.1], gap="large")
 
     with left:
-        symptom = st.text_area("Symptom", placeholder="e.g. Guest laptop gets an IP but can't reach the file server", height=80)
-        topology = st.text_area("Topology note", placeholder="e.g. Access switch SW2 → trunk → core switch SW1 → server VLAN", height=70)
-        evidence = st.text_area("Show-command evidence", height=200,
+        symptom = st.text_area("Symptom", placeholder="e.g. Guest laptop gets an IP but can't reach the file server",
+                                height=80, key=f"symptom_{cid}")
+        topology = st.text_area("Topology note", placeholder="e.g. Access switch SW2 \u2192 trunk \u2192 core switch SW1 \u2192 server VLAN",
+                                 height=70, key=f"topology_{cid}")
+        evidence = st.text_area("Show-command evidence", height=200, key=f"evidence_{cid}",
                                  placeholder="Paste 'show ip interface brief' / 'show vlan brief' / 'show interfaces trunk' / 'show running-config' output")
 
         c1, c2 = st.columns(2)
         with c1:
             suggested_category = suggest_category(symptom, evidence)
-            category = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(suggested_category))
+            category = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(suggested_category),
+                                     key=f"category_{cid}")
             st.caption(f"Suggested from symptom/evidence: **{suggested_category}**")
         with c2:
             suggested_severity = suggest_severity(symptom)
-            severity = st.selectbox("Severity", SEVERITIES, index=SEVERITIES.index(suggested_severity))
+            severity = st.selectbox("Severity", SEVERITIES, index=SEVERITIES.index(suggested_severity),
+                                     key=f"severity_{cid}")
             st.caption(f"Suggested from symptom text: **{suggested_severity}**")
 
         b1, b2 = st.columns(2)
-        run_checker = b1.button("🔍 Run rule checker", use_container_width=True)
-        run_ai = b2.button("🤖 Get AI diagnosis", type="primary", use_container_width=True, disabled=not api_key)
+        run_checker = b1.button("\U0001F50D Run rule checker", use_container_width=True)
+        run_ai = b2.button("\U0001F916 Get AI diagnosis", type="primary", use_container_width=True, disabled=not api_key)
 
         if run_checker:
             st.session_state["findings"] = run_rule_checker(evidence)
@@ -182,15 +210,22 @@ with tab_new:
                     st.session_state["diagnosis"] = extract_json(response.text)
                     st.session_state["editing"] = False
                 except json.JSONDecodeError:
-                    print("[NetSage AI] model returned non-JSON response — falling back to manual edit.")
+                    print("[NetSage AI] model returned non-JSON response - falling back to manual edit.")
                     st.session_state["diagnosis"] = blank_diagnosis(category)
                     st.session_state["editing"] = True
-                    st.info("The AI's response couldn't be read as a diagnosis. Fill one in manually below and continue.")
+                    st.markdown(
+                        '<div class="formal-notice">The AI response could not be interpreted as a valid diagnosis. '
+                        'Please complete the diagnosis manually below and continue the workflow.</div>',
+                        unsafe_allow_html=True,
+                    )
                 except Exception as e:
                     print(f"[NetSage AI] diagnosis error: {e}")
                     st.session_state["diagnosis"] = blank_diagnosis(category)
                     st.session_state["editing"] = True
-                    st.warning(friendly_error_message(e))
+                    st.markdown(
+                        f'<div class="formal-notice">{friendly_error_message(e)}</div>',
+                        unsafe_allow_html=True,
+                    )
 
         if st.session_state["findings"]:
             st.markdown("**Level-0 rule checker findings**")
@@ -201,7 +236,7 @@ with tab_new:
     with right:
         diagnosis = st.session_state["diagnosis"]
         if not diagnosis:
-            st.info("Run the rule checker, then request an AI diagnosis — results appear here.")
+            st.info("Run the rule checker, then request an AI diagnosis - results appear here.")
         else:
             osi_col, info_col = st.columns([1, 1.6])
             with osi_col:
@@ -231,51 +266,84 @@ with tab_new:
                     for i, s in enumerate(diagnosis.get("fix_steps", []), 1):
                         st.markdown(f"{i}. {s}")
                 else:
-                    diagnosis["root_cause"] = st.text_area("Root cause", diagnosis.get("root_cause", ""), height=70)
-                    diagnosis["evidence"] = st.text_area("Evidence", diagnosis.get("evidence", ""), height=60)
-                    diagnosis["next_command"] = st.text_input("Next command", diagnosis.get("next_command", ""))
-                    fix_text = st.text_area("Fix steps (one per line)", "\n".join(diagnosis.get("fix_steps", [])), height=90)
+                    st.markdown("**Manual / edited diagnosis** - fill in or correct every field below.")
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        cur_layer = diagnosis.get("osi_layer", "Other")
+                        if cur_layer not in OSI_LAYERS_FOR_EDIT:
+                            cur_layer = "Other"
+                        diagnosis["osi_layer"] = st.selectbox(
+                            "OSI layer", OSI_LAYERS_FOR_EDIT, index=OSI_LAYERS_FOR_EDIT.index(cur_layer),
+                            key=f"edit_osi_{cid}",
+                        )
+                    with ec2:
+                        cur_conf = diagnosis.get("confidence", "low")
+                        if cur_conf not in CONFIDENCE_LEVELS:
+                            cur_conf = "low"
+                        diagnosis["confidence"] = st.selectbox(
+                            "Confidence", CONFIDENCE_LEVELS, index=CONFIDENCE_LEVELS.index(cur_conf),
+                            key=f"edit_conf_{cid}",
+                        )
+                    diagnosis["category"] = category
+                    diagnosis["root_cause"] = st.text_area("Root cause", diagnosis.get("root_cause", ""),
+                                                            height=70, key=f"edit_root_{cid}")
+                    diagnosis["evidence"] = st.text_area("Evidence", diagnosis.get("evidence", ""),
+                                                          height=60, key=f"edit_evidence_{cid}")
+                    diagnosis["next_command"] = st.text_input("Next command", diagnosis.get("next_command", ""),
+                                                               key=f"edit_next_cmd_{cid}")
+                    fix_text = st.text_area("Fix steps (one per line)", "\n".join(diagnosis.get("fix_steps", [])),
+                                             height=90, key=f"edit_fix_steps_{cid}")
                     diagnosis["fix_steps"] = [s for s in fix_text.split("\n") if s.strip()]
+                    st.session_state["diagnosis"] = diagnosis
 
                 fb1, fb2, fb3 = st.columns(3)
 
                 def log_and_reset(feedback):
+                    d = st.session_state["diagnosis"] or {}
                     row = {
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "symptom": symptom, "category": category, "severity": severity,
-                        "osi_layer": diagnosis.get("osi_layer"), "confidence": diagnosis.get("confidence"),
-                        "root_cause": diagnosis.get("root_cause"), "feedback": feedback,
+                        "osi_layer": d.get("osi_layer"), "confidence": d.get("confidence"),
+                        "root_cause": d.get("root_cause"), "evidence": d.get("evidence"),
+                        "next_command": d.get("next_command"),
+                        "fix_steps": " | ".join(d.get("fix_steps", [])),
+                        "feedback": feedback,
                     }
                     save_case(row)
                     st.session_state["findings"] = None
                     st.session_state["diagnosis"] = None
                     st.session_state["editing"] = False
+                    st.session_state["case_id"] += 1  # fresh widget keys -> blank form, new suggestions
                     st.rerun()
 
                 if not st.session_state["editing"]:
-                    if fb1.button("✅ Accept", use_container_width=True):
+                    if fb1.button("\u2705 Accept", use_container_width=True):
                         log_and_reset("accepted")
-                    if fb2.button("✏️ Edit", use_container_width=True):
+                    if fb2.button("\u270F\ufe0f Edit", use_container_width=True):
                         st.session_state["editing"] = True
                         st.rerun()
-                    if fb3.button("❌ Reject", use_container_width=True):
+                    if fb3.button("\u274C Reject", use_container_width=True):
                         log_and_reset("rejected")
                 else:
-                    if st.button("💾 Save edited diagnosis", type="primary", use_container_width=True):
+                    sv1, sv2 = st.columns(2)
+                    if sv1.button("\U0001F4BE Save edited diagnosis", type="primary", use_container_width=True):
                         log_and_reset("edited")
+                    if sv2.button("Cancel edit", use_container_width=True):
+                        st.session_state["editing"] = False
+                        st.rerun()
 
 # ================= DASHBOARD TAB =================
 with tab_dash:
     cases = load_cases()
     if cases.empty:
-        st.info("No cases logged yet — resolve a case in the New Case tab first.")
+        st.info("No cases logged yet - resolve a case in the New Case tab first.")
     else:
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total cases", len(cases))
 
         reviewed = cases[cases["feedback"].isin(["accepted", "edited", "rejected"])]
         agreement_rate = round((reviewed["feedback"] == "accepted").mean() * 100) if not reviewed.empty else 0
-        m2.metric("AI–Human Agreement", f"{agreement_rate}%")
+        m2.metric("AI-Human Agreement", f"{agreement_rate}%")
         m3.metric("Accepted", int((cases["feedback"] == "accepted").sum()))
         m4.metric("Edited", int((cases["feedback"] == "edited").sum()))
         m5.metric("Rejected", int((cases["feedback"] == "rejected").sum()))
@@ -287,7 +355,7 @@ with tab_dash:
             fig = px.bar(sev_counts, x="severity", y="count", color="severity",
                          color_discrete_map=SEV_COLOR, title="Cases by severity")
             fig.update_layout(showlegend=False, height=320)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with c2:
             cat_counts = cases["category"].value_counts().reset_index()
@@ -295,7 +363,7 @@ with tab_dash:
             fig = px.bar(cat_counts, x="count", y="category", orientation="h", title="Cases by category")
             fig.update_traces(marker_color="#4FD1C5")
             fig.update_layout(height=320)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with c3:
             fb_counts = cases["feedback"].value_counts().reset_index()
@@ -303,9 +371,9 @@ with tab_dash:
             fig = px.pie(fb_counts, names="feedback", values="count", hole=0.5,
                          color="feedback", color_discrete_map=FEEDBACK_COLOR, title="Feedback breakdown")
             fig.update_layout(height=320)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         st.markdown("**Recent cases**")
-        st.dataframe(cases.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(cases.sort_values("timestamp", ascending=False), width="stretch", hide_index=True)
 
-        st.download_button("⬇️ Download case log (CSV)", cases.to_csv(index=False), file_name="netsage_case_log.csv")
+        st.download_button("\u2B07\ufe0f Download case log (CSV)", cases.to_csv(index=False), file_name="netsage_case_log.csv")
