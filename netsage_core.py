@@ -7,8 +7,7 @@ import ipaddress
 import json
 import re
 
-
-CATEGORIES = ["IP Addressing", "VLAN", "DNS","Routing", "DHCP", "DNS", "NAT/ACL", "Physical", "Other"]
+CATEGORIES = ["IP Addressing", "VLAN", "Routing", "DHCP", "NAT/ACL", "Physical", "Other"]
 SEVERITIES = ["Sev1", "Sev2", "Sev3"]
 LAYERS = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "Other"]
 
@@ -103,6 +102,24 @@ def suggest_severity(symptom: str) -> str:
     if any(k in t for k in ["internet", "email", "mail", "dns", "cannot connect to server"]):
         return "Sev2"
     return "Sev3"
+
+
+def suggest_category(symptom: str, evidence: str = "") -> str:
+    """Keyword-based hint for the Category dropdown, same idea as suggest_severity."""
+    text = f"{symptom or ''} {evidence or ''}".lower()
+    if "vlan" in text or "trunk" in text:
+        return "VLAN"
+    if "dhcp" in text or "lease" in text:
+        return "DHCP"
+    if any(k in text for k in ["nat", "acl", "access-list", "access list"]):
+        return "NAT/ACL"
+    if any(k in text for k in ["route", "routing", "ospf", "eigrp", "bgp", " rip "]):
+        return "Routing"
+    if any(k in text for k in ["gateway", "ip address", "subnet", "duplicate ip"]):
+        return "IP Addressing"
+    if any(k in text for k in ["cable", "shutdown", "wireless", "signal", "power", "link down", "interface down"]):
+        return "Physical"
+    return "Other"
 
 
 def build_user_prompt(symptom: str, topology: str, evidence: str, findings: list) -> str:

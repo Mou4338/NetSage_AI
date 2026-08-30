@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from netsage_core import (
     CATEGORIES, SEVERITIES, DEFAULT_SYSTEM_PROMPT,
-    run_rule_checker, suggest_severity, build_user_prompt, extract_json,
+    run_rule_checker, suggest_severity, suggest_category, build_user_prompt, extract_json,
 )
 
 from google import genai
@@ -47,6 +47,23 @@ def badge(text, color):
     return f'<span class="badge" style="color:{color};background:{color}22;border:1px solid {color}55;">{text}</span>'
 
 
+def friendly_error_message(exc: Exception) -> str:
+    """A calm, formal message for the dashboard — never the raw exception/traceback."""
+    text = str(exc)
+    if "RESOURCE_EXHAUSTED" in text or "429" in text or "quota" in text.lower():
+        return ("AI diagnosis is temporarily unavailable — the daily request limit for this API key "
+                "has been reached. You can fill in a diagnosis manually below and continue the workflow.")
+    return ("AI diagnosis is temporarily unavailable right now. "
+            "You can fill in a diagnosis manually below and continue the workflow.")
+
+
+def blank_diagnosis(category_value: str) -> dict:
+    return {
+        "osi_layer": "Other", "confidence": "low", "category": category_value,
+        "root_cause": "", "evidence": "", "next_command": "", "fix_steps": [],
+    }
+
+
 # ---------- persistence ----------
 def load_cases():
     if os.path.exists(CASE_LOG_PATH):
@@ -61,8 +78,9 @@ def save_case(row: dict):
     return df
 
 
+# make sure the prompt file always exists before anything tries to open() it
 if not os.path.exists(PROMPT_PATH):
-    with open(PROMPT_PATH, "w") as f:
+    with open(PROMPT_PATH, "w", encoding="utf-8") as f:
         f.write(DEFAULT_SYSTEM_PROMPT)
 
 for key, default in {"findings": None, "diagnosis": None, "editing": False}.items():
@@ -75,16 +93,13 @@ load_dotenv()
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
 
-    default_api_key = st.secrets.get(
-        "GOOGLE_API_KEY",
-        os.environ.get("GOOGLE_API_KEY", "")
-    )
+    try:
+        default_api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
+    except Exception:
+        # no .streamlit/secrets.toml on this machine — fall back to .env / blank, don't crash the app
+        default_api_key = os.environ.get("GOOGLE_API_KEY", "")
 
-    api_key = st.text_input(
-        "Google AI Studio API key",
-        value=default_api_key,
-        type="password"
-    )
+    api_key = st.text_input("Google AI Studio API key", value=default_api_key, type="password")
     model_name = st.text_input("Model", value=os.environ.get("NETSAGE_MODEL", "gemini-3.6-flash"),
                                 help="Must match a model name your key can actually call.")
 
@@ -100,26 +115,16 @@ with st.sidebar:
                     if "generateContent" in (m.supported_actions or []):
                         names.append(m.name)
                 st.session_state["model_list"] = names
-            except Exception as e:
-                st.error(str(e))
+            except Exception:
+                st.warning("Couldn't reach the model list right now — check your API key and try again shortly.")
         if st.session_state.get("model_list"):
             for n in st.session_state["model_list"]:
                 st.code(n, language=None)
 
     with st.expander("Edit diagnosis system prompt"):
-        import os
-
-    if os.path.exists(PROMPT_PATH):
         with open(PROMPT_PATH, "r", encoding="utf-8", errors="replace") as f:
-            prompt_text = f.read()
-    else:
-        prompt_content = "# Write your diagnosis prompt here..."
-
-        prompt_text = st.text_area(
-           "Diagnosis Prompt",
-            value=prompt_content,
-            height=300
-        )
+            current_prompt = f.read()
+        prompt_text = st.text_area("Diagnosis prompt", value=current_prompt, height=260)
         if st.button("Save prompt"):
             with open(PROMPT_PATH, "w", encoding="utf-8") as f:
                 f.write(prompt_text)
@@ -144,11 +149,13 @@ with tab_new:
 
         c1, c2 = st.columns(2)
         with c1:
-            category = st.selectbox("Category", CATEGORIES)
+            suggested_category = suggest_category(symptom, evidence)
+            category = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(suggested_category))
+            st.caption(f"Suggested from symptom/evidence: **{suggested_category}**")
         with c2:
-            suggested = suggest_severity(symptom)
-            severity = st.selectbox("Severity", SEVERITIES, index=SEVERITIES.index(suggested))
-            st.caption(f"Suggested from symptom text: **{suggested}**")
+            suggested_severity = suggest_severity(symptom)
+            severity = st.selectbox("Severity", SEVERITIES, index=SEVERITIES.index(suggested_severity))
+            st.caption(f"Suggested from symptom text: **{suggested_severity}**")
 
         b1, b2 = st.columns(2)
         run_checker = b1.button("🔍 Run rule checker", use_container_width=True)
@@ -157,6 +164,7 @@ with tab_new:
         if run_checker:
             st.session_state["findings"] = run_rule_checker(evidence)
             st.session_state["diagnosis"] = None
+            st.session_state["editing"] = False
 
         if run_ai:
             findings = st.session_state["findings"] or run_rule_checker(evidence)
@@ -169,18 +177,20 @@ with tab_new:
                     response = client.models.generate_content(
                         model=model_name,
                         contents=f"{system_prompt}\n\n{user_prompt}",
-                        config=types.GenerateContentConfig(
-                            max_output_tokens=2000,
-                            temperature=0.0,
-                        ),
+                        config=types.GenerateContentConfig(max_output_tokens=2000, temperature=0.0),
                     )
                     st.session_state["diagnosis"] = extract_json(response.text)
                     st.session_state["editing"] = False
                 except json.JSONDecodeError:
-                    st.error("Model did not return valid JSON. Raw response below.")
-                    st.code(response.text if "response" in dir() else "")
+                    print("[NetSage AI] model returned non-JSON response — falling back to manual edit.")
+                    st.session_state["diagnosis"] = blank_diagnosis(category)
+                    st.session_state["editing"] = True
+                    st.info("The AI's response couldn't be read as a diagnosis. Fill one in manually below and continue.")
                 except Exception as e:
-                    st.error(f"AI diagnosis failed: {e}")
+                    print(f"[NetSage AI] diagnosis error: {e}")
+                    st.session_state["diagnosis"] = blank_diagnosis(category)
+                    st.session_state["editing"] = True
+                    st.warning(friendly_error_message(e))
 
         if st.session_state["findings"]:
             st.markdown("**Level-0 rule checker findings**")
@@ -262,7 +272,7 @@ with tab_dash:
     else:
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total cases", len(cases))
-       
+
         reviewed = cases[cases["feedback"].isin(["accepted", "edited", "rejected"])]
         agreement_rate = round((reviewed["feedback"] == "accepted").mean() * 100) if not reviewed.empty else 0
         m2.metric("AI–Human Agreement", f"{agreement_rate}%")
